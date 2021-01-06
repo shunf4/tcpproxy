@@ -20,7 +20,11 @@ def is_valid_ip4(ip):
     octets = ip.split('.')
     if len(octets) != 4:
         return False
-    return octets[0] != 0 and all(0 <= int(octet) <= 255 for octet in octets)
+
+    try:
+        return octets[0] != 0 and all(0 <= int(octet) <= 255 for octet in octets)
+    except ValueError:
+        return False
 
 
 def parse_args():
