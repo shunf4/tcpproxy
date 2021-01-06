@@ -13,7 +13,7 @@ class Module:
         if options is not None:
             if 'length' in options.keys():
                 self.len = int(options['length'])
-            if str(options.keys().get("wsdirection", "0")) == "1":
+            if str(options.get("wsdirection", "0")) == "1":
                 self.wsdirection = True
 
     def help(self):
