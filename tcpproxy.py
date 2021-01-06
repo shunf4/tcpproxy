@@ -16,6 +16,8 @@ import tempfile
 import contextlib
 import traceback
 
+import socks5
+
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography import x509
@@ -44,17 +46,21 @@ def parse_args():
                                                  'the intercepted traffic.')
 
     parser.add_argument('-ti', '--targetip', dest='target_ip',
-                        help='remote target IP or host name')
+                        help='remote target IP or host name. not effective when using SOCKS5 mode.')
 
     parser.add_argument('-tp', '--targetport', dest='target_port', type=int,
-                        help='remote target port')
+                        help='remote target port. not effective when using SOCKS5 mode.')
 
     parser.add_argument('-li', '--listenip', dest='listen_ip',
                         default='0.0.0.0', help='IP address/host name to listen for ' +
-                        'incoming data')
+                        'incoming data (or SOCKS5 client connection)')
 
     parser.add_argument('-lp', '--listenport', dest='listen_port', type=int,
-                        default=8080, help='port to listen on')
+                        default=8080, help='port to listen on for incoming data (or SOCKS5 client connection)')
+
+    parser.add_argument('-s5', '--socks5', dest='use_socks5', default=False,
+                        action='store_true',
+                        help='enable SOCKS5 mode (acts as a SOCKS5 server and intercept proxy connections)')
 
     parser.add_argument('-pi', '--proxy-ip', dest='proxy_ip', default=None,
                         help='IP address/host name of proxy')
@@ -170,7 +176,7 @@ def print_module_help(modlist):
             print('\tNo options or missing help() function.')
 
 
-def update_module_hosts(modules, source, destination):
+def update_module_hosts(modules, source, destination, remote_hostname, timestamp):
     # set source and destination IP/port for each module
     # source and destination are ('IP', port) tuples
     # this can only be done once local and remote connections have been established
@@ -180,6 +186,10 @@ def update_module_hosts(modules, source, destination):
                 m.source = source
             if hasattr(m, 'destination'):
                 m.destination = destination
+            if hasattr(m, 'remote_hostname'):
+                m.remote_hostname = remote_hostname
+            if hasattr(m, 'timestamp'):
+                m.timestamp = timestamp
 
 
 def receive_from(s):
@@ -346,41 +356,153 @@ def starttls(args, local_socket, read_sockets):
             )
 
 
-def start_proxy_thread(local_socket, args, in_modules, out_modules):
+def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules):
+    target_ip = args.target_ip
+    target_port = args.target_port
+
+    # do SOCKS5 if SOCKS5 mode enabled
+    if args.use_socks5:
+        socks5_conn = socks5.Connection(our_role="server")
+        socks5_conn.initiate_connection()
+
+        # get available auth methods from client
+        while True:
+            data = local_socket.recv(1024)
+            _event = socks5_conn.recv(data)
+            if _event != "NeedMoreData":
+                break
+
+        assert isinstance(_event, socks5.GreetingRequest)
+        if socks5.AUTH_TYPE["NO_AUTH"] not in _event.methods:
+            print('%s:%d : SOCKS5 NO_AUTH not supported by client; exiting' % in_addrinfo)
+            sys.exit(101)
+
+        # send NO_AUTH auth method to client
+        _event = socks5.GreetingResponse(socks5.AUTH_TYPE["NO_AUTH"])
+        data = socks5_conn.send(_event)
+        local_socket.send(data)
+
+        # get address from client
+        while True:
+            data = local_socket.recv(1024)
+            _event = socks5_conn.recv(data)
+            if _event != "NeedMoreData":
+                break
+
+        assert isinstance(_event, socks5.Request)
+        if _event.cmd != socks5.REQ_COMMAND["CONNECT"]:
+            print("%s:%d : SOCKS5 client didn't want to connect; exit" % in_addrinfo)
+            sys.exit(102)
+
+        target_ip = str(_event.addr)
+        target_port = int(_event.port)
+
+    if not is_valid_ip4(target_ip):
+        try:
+            ip = socket.gethostbyname(target_ip)
+        except socket.gaierror:
+            ip = False
+        if ip is False:
+            print('%s is not a valid IP address or host name' % target_ip)
+            sys.exit(2)
+        else:
+            target_ip = ip
+
     # This method is executed in a thread. It will relay data between the local
     # host and the remote host, while letting modules work on the data before
     # passing it on.
     remote_socket = socks.socksocket()
+    remote_socket.getsockname
 
     if args.proxy_ip:
         proxy_types = {'SOCKS5': socks.SOCKS5, 'SOCKS4': socks.SOCKS4, 'HTTP': socks.HTTP}
         remote_socket.set_proxy(proxy_types[args.proxy_type], args.proxy_ip, args.proxy_port)
 
     try:
-        remote_socket.connect((args.target_ip, args.target_port))
+        remote_socket.connect((target_ip, target_port))
         vprint('Connected to %s:%d' % remote_socket.getpeername(), args.verbose)
         log(args.logfile, 'Connected to %s:%d' % remote_socket.getpeername())
     except socket.error as serr:
         if serr.errno == errno.ECONNREFUSED:
             for s in [remote_socket, local_socket]:
                 s.close()
-            print(f'{time.strftime("%Y%m%d-%H%M%S")}, {args.target_ip}:{args.target_port}- Connection refused')
-            log(args.logfile, f'{time.strftime("%Y%m%d-%H%M%S")}, {args.target_ip}:{args.target_port}- Connection refused')
+            print(f'{time.strftime("%Y%m%d-%H%M%S")}, {target_ip}:{target_port}- Connection refused')
+            log(args.logfile, f'{time.strftime("%Y%m%d-%H%M%S")}, {target_ip}:{target_port}- Connection refused')
+
+            if args.use_socks5:
+                _event = socks5.Response(
+                    socks5.RESP_STATUS["CONNECTION_REFUSED"],
+                    socks5.ADDR_TYPE["IPV4"],
+                    "0.0.0.0",
+                    0
+                )
+                data = socks5_conn.send(_event)
+                local_socket.send(data)
+
             return None
         elif serr.errno == errno.ETIMEDOUT:
             for s in [remote_socket, local_socket]:
                 s.close()
-            print(f'{time.strftime("%Y%m%d-%H%M%S")}, {args.target_ip}:{args.target_port}- Connection timed out')
-            log(args.logfile, f'{time.strftime("%Y%m%d-%H%M%S")}, {args.target_ip}:{args.target_port}- Connection timed out')
+            print(f'{time.strftime("%Y%m%d-%H%M%S")}, {target_ip}:{target_port}- Connection timed out')
+            log(args.logfile, f'{time.strftime("%Y%m%d-%H%M%S")}, {target_ip}:{target_port}- Connection timed out')
+
+            if args.use_socks5:
+                _event = socks5.Response(
+                    socks5.RESP_STATUS["GENRAL_FAILURE"],
+                    socks5.ADDR_TYPE["IPV4"],
+                    "0.0.0.0",
+                    0
+                )
+                # dirty fix for https://github.com/mike820324/socks5/issues/16
+                socks5_conn._conn._addr_type = _event.atyp
+                socks5_conn._conn._addr = _event.addr
+                socks5_conn._conn._port = _event.port
+
+                data = socks5_conn.send(_event)
+                local_socket.send(data)
+
             return None
         else:
+            if args.use_socks5:
+                _event = socks5.Response(
+                    socks5.RESP_STATUS["GENRAL_FAILURE"],
+                    socks5.ADDR_TYPE["IPV4"],
+                    "0.0.0.0",
+                    0
+                )
+                # dirty fix for https://github.com/mike820324/socks5/issues/16
+                socks5_conn._conn._addr_type = _event.atyp
+                socks5_conn._conn._addr = _event.addr
+                socks5_conn._conn._port = _event.port
+
+                data = socks5_conn.send(_event)
+                local_socket.send(data)
+
             for s in [remote_socket, local_socket]:
                 s.close()
             raise serr
 
     try:
-        update_module_hosts(out_modules, local_socket.getpeername(), remote_socket.getpeername())
-        update_module_hosts(in_modules, remote_socket.getpeername(), local_socket.getpeername())
+        timestamp = datetime.datetime.utcnow()
+        update_module_hosts(out_modules, local_socket.getpeername(), remote_socket.getpeername(), None if args.target_ip == target_ip else args.target_ip, timestamp)
+        update_module_hosts(in_modules, remote_socket.getpeername(), local_socket.getpeername(), None if args.target_ip == target_ip else args.target_ip, timestamp)
+
+        if args.use_socks5:
+            (binded_ip, binded_port) = remote_socket.getsockname()
+            _event = socks5.Response(
+                socks5.RESP_STATUS["SUCCESS"],
+                socks5.ADDR_TYPE["IPV4"] if type(ipaddress.ip_address(binded_ip)) is ipaddress.IPv4Address else socks5.ADDR_TYPE["IPV6"],
+                binded_ip,
+                binded_port
+            )
+            # dirty fix for https://github.com/mike820324/socks5/issues/16
+            socks5_conn._conn._addr_type = _event.atyp
+            socks5_conn._conn._addr = _event.addr
+            socks5_conn._conn._port = _event.port
+
+            data = socks5_conn.send(_event)
+            local_socket.send(data)
+
     except socket.error as serr:
         if serr.errno == errno.ENOTCONN:
             # kind of a blind shot at fixing issue #15
@@ -492,12 +614,13 @@ def vprint(msg, is_verbose):
 def main():
     args = parse_args()
     if args.list is False and args.help_modules is None:
-        if not args.target_ip:
-            print('Target IP is required: -ti')
-            sys.exit(6)
-        if not args.target_port:
-            print('Target port is required: -tp')
-            sys.exit(7)
+        if not args.use_socks5:
+            if not args.target_ip:
+                print('Target IP is required: -ti')
+                sys.exit(6)
+            if not args.target_port:
+                print('Target port is required: -tp')
+                sys.exit(7)
 
     if ((args.client_key is None) ^ (args.client_certificate is None)):
         print("You must either specify both the client certificate and client key or leave both empty")
@@ -530,16 +653,17 @@ def main():
         else:
             args.listen_ip = ip
 
-    if not is_valid_ip4(args.target_ip):
-        try:
-            ip = socket.gethostbyname(args.target_ip)
-        except socket.gaierror:
-            ip = False
-        if ip is False:
-            print('%s is not a valid IP address or host name' % args.target_ip)
-            sys.exit(2)
-        else:
-            args.target_ip = ip
+    # if args.target_ip is not None:
+    #     if not is_valid_ip4(args.target_ip):
+    #         try:
+    #             ip = socket.gethostbyname(args.target_ip)
+    #         except socket.gaierror:
+    #             ip = False
+    #         if ip is False:
+    #             print('%s is not a valid IP address or host name' % args.target_ip)
+    #             sys.exit(2)
+    #         else:
+    #             args.target_ip = ip
 
     if args.in_modules is not None:
         in_modules = generate_module_list(args.in_modules, incoming=True, verbose=args.verbose)
@@ -574,7 +698,7 @@ def main():
             vprint('Connection from %s:%d' % in_addrinfo, args.verbose)
             log(args.logfile, 'Connection from %s:%d' % in_addrinfo)
             proxy_thread = threading.Thread(target=start_proxy_thread,
-                                            args=(in_socket, args, in_modules,
+                                            args=(in_socket, in_addrinfo, args, in_modules,
                                                   out_modules))
             log(args.logfile, "Starting proxy thread " + proxy_thread.name)
             proxy_thread.start()
