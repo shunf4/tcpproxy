@@ -229,7 +229,7 @@ def create_host_cert(args, host):
     with open(args.ca_key, 'rb') as f:
         ca_key_bytes = f.read()
 
-    ca_cert = x509.load_pem_x509_certificate(ca_cert_bytes)
+    ca_cert = x509.load_pem_x509_certificate(ca_cert_bytes, None)
     ca_key = serialization.load_pem_private_key(ca_key_bytes, None)
 
     utf8_host = host.encode('utf-8')
@@ -261,30 +261,39 @@ def create_host_cert(args, host):
     builder = builder.add_extension(x509.SubjectAlternativeName(sans), critical=False)
     cert = builder.sign(private_key=ca_key, algorithm=hashes.SHA256())
     
-    cert_file = tempfile.NamedTemporaryFile()
+    cert_file = tempfile.NamedTemporaryFile(delete=False)
     cert_file.write(cert.public_bytes(serialization.Encoding.PEM))
     cert_file.flush()
+    cert_file.close()
     
-    cert_key_file = tempfile.NamedTemporaryFile()
+    cert_key_file = tempfile.NamedTemporaryFile(delete=False)
     cert_key_file.write(cert_key.private_bytes(
         encoding=serialization.Encoding.PEM, 
         format=serialization.PrivateFormat.TraditionalOpenSSL, 
         encryption_algorithm=serialization.NoEncryption()
     ))
     cert_key_file.flush()
+    cert_key_file.close()
     
     return (cert_file, cert_key_file)
 
+hostname_ctx_dict = {}
 def enable_ssl(args, remote_socket, local_socket):
     sni = None
 
     def sni_callback(sock, name, ctx):
         nonlocal sni
         sni = name
-        (cert_file, cert_key_file) = create_host_cert(args, name)
         
-        new_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        new_ctx.load_cert_chain(certfile=cert_file.name, keyfile=cert_key_file.name)
+        new_ctx = hostname_ctx_dict.get(name)
+        
+        if new_ctx is None:
+            (cert_file, cert_key_file) = create_host_cert(args, name)
+            new_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            new_ctx.load_cert_chain(certfile=cert_file.name, keyfile=cert_key_file.name)
+            hostname_ctx_dict[name] = new_ctx
+            os.unlink(cert_file.name)
+            os.unlink(cert_key_file.name)
         sock.context = new_ctx
     
 
@@ -296,6 +305,8 @@ def enable_ssl(args, remote_socket, local_socket):
         ctx.load_cert_chain(certfile=tmp_cert_file.name,
                             keyfile=tmp_cert_key_file.name,
                             )
+        os.unlink(tmp_cert_file.name)
+        os.unlink(tmp_cert_key_file.name)
         local_socket = ctx.wrap_socket(local_socket,
                                        server_side=True,
                                        )
