@@ -1,3 +1,4 @@
 paho-mqtt
 PySocks
-cryptography
+cryptography>=3.3
+socks5
