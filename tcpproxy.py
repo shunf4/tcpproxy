@@ -566,7 +566,11 @@ def main():
     # endless loop until ctrl+c
     try:
         while True:
-            in_socket, in_addrinfo = proxy_socket.accept()
+            ready, _, _ = select.select([proxy_socket], [], [], 0.2)
+            if ready:
+                in_socket, in_addrinfo = proxy_socket.accept()
+            else:
+                continue
             vprint('Connection from %s:%d' % in_addrinfo, args.verbose)
             log(args.logfile, 'Connection from %s:%d' % in_addrinfo)
             proxy_thread = threading.Thread(target=start_proxy_thread,
