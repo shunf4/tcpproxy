@@ -10,6 +10,15 @@ import ssl
 import time
 import select
 import errno
+import ipaddress
+import datetime
+import tempfile
+import contextlib
+import traceback
+
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography import x509
 
 # TODO: implement verbose output
 # some code snippets, as well as the original idea, from Black Hat Python
@@ -85,11 +94,11 @@ def parse_args():
     parser.add_argument('-s', '--ssl', dest='use_ssl', action='store_true',
                         default=False, help='detect SSL/TLS as well as STARTTLS')
 
-    parser.add_argument('-sc', '--server-certificate', default='mitm.pem',
-                        help='server certificate in PEM format (default: %(default)s)')
+    parser.add_argument('-ac', '--ca-certificate', default='mitm.pem',
+                        help='ca certificate (for signing server certificate) in PEM format (default: %(default)s)')
 
-    parser.add_argument('-sk', '--server-key', default='mitm.pem',
-                        help='server key in PEM format (default: %(default)s)')
+    parser.add_argument('-ak', '--ca-key', default='mitm.pem',
+                        help='ca certificate (for signing server certificate) key in PEM format (default: %(default)s)')
 
     parser.add_argument('-cc', '--client-certificate', default=None,
                         help='client certificate in PEM format in case client authentication is required by the target')
@@ -207,7 +216,64 @@ def is_client_hello(sock):
                                 b"\x03\x03",
                                 b"\x02\x00"]
             )
+            
+def try_into_ip(host):
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        return None
 
+def create_host_cert(args, host):
+    with open(args.ca_certificate, 'rb') as f:
+        ca_cert_bytes = f.read()
+    with open(args.ca_key, 'rb') as f:
+        ca_key_bytes = f.read()
+
+    ca_cert = x509.load_pem_x509_certificate(ca_cert_bytes)
+    ca_key = serialization.load_pem_private_key(ca_key_bytes, None)
+
+    utf8_host = host.encode('utf-8')
+    
+    cert_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=2048
+    )
+    
+    builder = x509.CertificateBuilder()
+    builder = builder.issuer_name(ca_cert.subject)
+    builder = builder.add_extension(x509.ExtendedKeyUsage([x509.ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+    builder = builder.public_key(cert_key.public_key())
+    builder = builder.not_valid_before(datetime.datetime.now() - datetime.timedelta(days=2))
+    builder = builder.not_valid_after(datetime.datetime.now() + datetime.timedelta(days=2))
+    
+    subject = [
+        x509.NameAttribute(x509.NameOID.COMMON_NAME, host)
+    ]
+    builder = builder.subject_name(x509.Name(subject))
+    builder = builder.serial_number(x509.random_serial_number())
+
+    sans = []
+    ip = try_into_ip(host)
+    if ip is None:
+        sans.append(x509.DNSName(host))
+    else:
+        sans.append(x509.IPAddress(ip))
+    builder = builder.add_extension(x509.SubjectAlternativeName(sans), critical=False)
+    cert = builder.sign(private_key=ca_key, algorithm=hashes.SHA256())
+    
+    cert_file = tempfile.NamedTemporaryFile()
+    cert_file.write(cert.public_bytes(serialization.Encoding.PEM))
+    cert_file.flush()
+    
+    cert_key_file = tempfile.NamedTemporaryFile()
+    cert_key_file.write(cert_key.private_bytes(
+        encoding=serialization.Encoding.PEM, 
+        format=serialization.PrivateFormat.TraditionalOpenSSL, 
+        encryption_algorithm=serialization.NoEncryption()
+    ))
+    cert_key_file.flush()
+    
+    return (cert_file, cert_key_file)
 
 def enable_ssl(args, remote_socket, local_socket):
     sni = None
@@ -215,18 +281,29 @@ def enable_ssl(args, remote_socket, local_socket):
     def sni_callback(sock, name, ctx):
         nonlocal sni
         sni = name
+        (cert_file, cert_key_file) = create_host_cert(args, name)
+        
+        new_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        new_ctx.load_cert_chain(certfile=cert_file.name, keyfile=cert_key_file.name)
+        sock.context = new_ctx
+    
 
     try:
         ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
         ctx.sni_callback = sni_callback
-        ctx.load_cert_chain(certfile=args.server_certificate,
-                            keyfile=args.server_key,
+        (tmp_cert_file, tmp_cert_key_file) = create_host_cert(args, "temp_default")
+        
+        ctx.load_cert_chain(certfile=tmp_cert_file.name,
+                            keyfile=tmp_cert_key_file.name,
                             )
         local_socket = ctx.wrap_socket(local_socket,
                                        server_side=True,
                                        )
     except ssl.SSLError as e:
         print("SSL handshake failed for listening socket", str(e))
+        print("=== Traceback ===")
+        traceback.print_exc()
+        print("===    End    ===")
         raise
 
     try:
@@ -242,6 +319,9 @@ def enable_ssl(args, remote_socket, local_socket):
                                         )
     except ssl.SSLError as e:
         print("SSL handshake failed for remote socket", str(e))
+        print("=== Traceback ===")
+        traceback.print_exc()
+        print("===    End    ===")
         raise
 
     return [remote_socket, local_socket]
