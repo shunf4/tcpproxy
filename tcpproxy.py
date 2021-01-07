@@ -493,8 +493,6 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
             print("SSL handshake with client failed", str(e))
             log(args.logfile, "SSL handshake with client failed", str(e))
             sys.exit(4)
-    else:
-        print("client connection is not SSL")
 
     # This method is executed in a thread. It will relay data between the local
     # host and the remote host, while letting modules work on the data before
