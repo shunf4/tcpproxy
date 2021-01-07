@@ -145,10 +145,24 @@ def parse_module_options(n):
     name = n[0]
     optionlist = n[1].split(':')
     options = {}
-    for op in optionlist:
+    i = 0
+    while i < len(optionlist):
+        op = optionlist[i]
         try:
             k, v = op.split('=')
+            if len(v) > 1 and v[0] == '"' and v[-1] != '"':
+                while True:
+                    i += 1
+                    op = optionlist[i]
+                    v += ":"
+                    v += op
+                    if len(op) > 0 and op[-1] == '"':
+                        break
+                v = v[1:-1]
+            elif len(v) > 1 and v[0] == '"' and v[-1] == '"':
+                v = v[1:-1]
             options[k] = v
+            i += 1
         except ValueError:
             print(op, ' is not valid!')
             sys.exit(23)
@@ -320,7 +334,7 @@ def generate_ssl_default_ctx(args):
         os.unlink(tmp_cert_key_file.name)
         hostname_ctx_dict[None] = default_ctx
 
-def enable_ssl(args, remote_socket, local_socket):
+def enable_ssl_with_client(args, local_socket):
     sni = None
 
     def sni_callback(sock, name, ctx):
@@ -353,10 +367,14 @@ def enable_ssl(args, remote_socket, local_socket):
         print("===    End    ===")
         raise
 
+    return (local_socket, sni)
+
+def enable_ssl_with_server(args, sni, remote_socket):
     try:
         ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
         ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_OPTIONAL
+        ctx.verify_mode = ssl.CERT_NONE
+
         if args.client_certificate and args.client_key:
             ctx.load_cert_chain(certfile=args.client_certificate,
                                 keyfile=args.client_key,
@@ -366,7 +384,9 @@ def enable_ssl(args, remote_socket, local_socket):
         log(args.logfile, 'Connecting to target using SNI %s' % sni)
         remote_socket = ctx.wrap_socket(remote_socket,
                                         server_hostname=sni,
+                                        do_handshake_on_connect=True
                                         )
+        
     except ssl.SSLError as e:
         print("SSL handshake failed for remote socket", str(e))
         print("=== Traceback ===")
@@ -374,7 +394,7 @@ def enable_ssl(args, remote_socket, local_socket):
         print("===    End    ===")
         raise
 
-    return [remote_socket, local_socket]
+    return remote_socket
 
 
 def starttls(args, local_socket, read_sockets):
@@ -388,6 +408,8 @@ def starttls(args, local_socket, read_sockets):
 def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules):
     target_host = args.target_ip
     target_port = args.target_port
+
+    local_socket_addrport = local_socket.getpeername()
 
     # do SOCKS5 if SOCKS5 mode enabled
     if args.use_socks5:
@@ -426,6 +448,9 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
         target_host = str(_event.addr)
         target_port = int(_event.port)
 
+        vprint("SOCKS5: client %s:%d wants to connect to: %s:%d" % (*local_socket_addrport, target_host, target_port), args.verbose)
+        log(args.logfile, "SOCKS5: client %s:%d wants to connect to: %s:%d" % (*local_socket_addrport, target_host, target_port))
+
     if not is_valid_ip4(target_host):
         try:
             ip = socket.gethostbyname(target_host)
@@ -439,6 +464,38 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
     else:
         target_ip = target_host
 
+    if args.use_socks5:
+        # This is fake
+        (binded_ip, binded_port) = ("172.17.0.1", 54321)
+        _event = socks5.Response(
+            socks5.RESP_STATUS["SUCCESS"],
+            socks5.ADDR_TYPE["IPV4"] if type(ipaddress.ip_address(binded_ip)) is ipaddress.IPv4Address else socks5.ADDR_TYPE["IPV6"],
+            binded_ip,
+            binded_port
+        )
+        # dirty fix for https://github.com/mike820324/socks5/issues/16
+        socks5_conn._conn._addr_type = _event.atyp
+        socks5_conn._conn._addr = _event.addr
+        socks5_conn._conn._port = _event.port
+
+        data = socks5_conn.send(_event)
+        local_socket.send(data)
+
+    sni = None
+    read_sockets, _, _ = select.select([local_socket], [], [], 1)
+
+    if starttls(args, local_socket, read_sockets):
+        try:
+            local_socket, sni = enable_ssl_with_client(args, local_socket)
+            vprint("SSL enabled with client %s:%d" % local_socket_addrport, args.verbose)
+            log(args.logfile, "SSL enabled with client %s:%d" % local_socket_addrport)
+        except ssl.SSLError as e:
+            print("SSL handshake with client failed", str(e))
+            log(args.logfile, "SSL handshake with client failed", str(e))
+            sys.exit(4)
+    else:
+        print("client connection is not SSL")
+
     # This method is executed in a thread. It will relay data between the local
     # host and the remote host, while letting modules work on the data before
     # passing it on.
@@ -451,8 +508,9 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
 
     try:
         remote_socket.connect((target_ip, target_port))
-        vprint('Connected to %s:%d' % remote_socket.getpeername(), args.verbose)
-        log(args.logfile, 'Connected to %s:%d' % remote_socket.getpeername())
+        remote_socket_addrport = remote_socket.getpeername()
+        vprint('Connected to %s:%d for client %s:%d' % (*remote_socket_addrport, *local_socket_addrport), args.verbose)
+        log(args.logfile, 'Connected to %s:%d for client %s:%d' % (*remote_socket_addrport, *local_socket_addrport))
     except socket.error as serr:
         if serr.errno == errno.ECONNREFUSED:
             for s in [remote_socket, local_socket]:
@@ -461,14 +519,18 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
             log(args.logfile, f'{time.strftime("%Y%m%d-%H%M%S")}, {target_host}:{target_port}- Connection refused')
 
             if args.use_socks5:
-                _event = socks5.Response(
-                    socks5.RESP_STATUS["CONNECTION_REFUSED"],
-                    socks5.ADDR_TYPE["IPV4"],
-                    "0.0.0.0",
-                    0
-                )
-                data = socks5_conn.send(_event)
-                local_socket.send(data)
+                # _event = socks5.Response(
+                #     socks5.RESP_STATUS["CONNECTION_REFUSED"],
+                #     socks5.ADDR_TYPE["IPV4"],
+                #     "0.0.0.0",
+                #     0
+                # )
+                # data = socks5_conn.send(_event)
+                # local_socket.send(data)
+
+                # Because we approve the SOCKS5 connection unconditionally,
+                # instead we close the connection here
+                pass
 
             return None
         elif serr.errno == errno.ETIMEDOUT:
@@ -478,36 +540,44 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
             log(args.logfile, f'{time.strftime("%Y%m%d-%H%M%S")}, {target_host}:{target_port}- Connection timed out')
 
             if args.use_socks5:
-                _event = socks5.Response(
-                    socks5.RESP_STATUS["GENRAL_FAILURE"],
-                    socks5.ADDR_TYPE["IPV4"],
-                    "0.0.0.0",
-                    0
-                )
-                # dirty fix for https://github.com/mike820324/socks5/issues/16
-                socks5_conn._conn._addr_type = _event.atyp
-                socks5_conn._conn._addr = _event.addr
-                socks5_conn._conn._port = _event.port
+                # _event = socks5.Response(
+                #     socks5.RESP_STATUS["GENRAL_FAILURE"],
+                #     socks5.ADDR_TYPE["IPV4"],
+                #     "0.0.0.0",
+                #     0
+                # )
+                # # dirty fix for https://github.com/mike820324/socks5/issues/16
+                # socks5_conn._conn._addr_type = _event.atyp
+                # socks5_conn._conn._addr = _event.addr
+                # socks5_conn._conn._port = _event.port
 
-                data = socks5_conn.send(_event)
-                local_socket.send(data)
+                # data = socks5_conn.send(_event)
+                # local_socket.send(data)
+
+                # Because we approve the SOCKS5 connection unconditionally,
+                # instead we close the connection here
+                pass
 
             return None
         else:
             if args.use_socks5:
-                _event = socks5.Response(
-                    socks5.RESP_STATUS["GENRAL_FAILURE"],
-                    socks5.ADDR_TYPE["IPV4"],
-                    "0.0.0.0",
-                    0
-                )
-                # dirty fix for https://github.com/mike820324/socks5/issues/16
-                socks5_conn._conn._addr_type = _event.atyp
-                socks5_conn._conn._addr = _event.addr
-                socks5_conn._conn._port = _event.port
+                # _event = socks5.Response(
+                #     socks5.RESP_STATUS["GENRAL_FAILURE"],
+                #     socks5.ADDR_TYPE["IPV4"],
+                #     "0.0.0.0",
+                #     0
+                # )
+                # # dirty fix for https://github.com/mike820324/socks5/issues/16
+                # socks5_conn._conn._addr_type = _event.atyp
+                # socks5_conn._conn._addr = _event.addr
+                # socks5_conn._conn._port = _event.port
 
-                data = socks5_conn.send(_event)
-                local_socket.send(data)
+                # data = socks5_conn.send(_event)
+                # local_socket.send(data)
+
+                # Because we approve the SOCKS5 connection unconditionally,
+                # instead we close the connection here
+                pass
 
             for s in [remote_socket, local_socket]:
                 s.close()
@@ -515,24 +585,26 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
 
     timestamp = datetime.datetime.utcnow()
     try:
-        update_module_hosts(out_modules, local_socket.getpeername(), remote_socket.getpeername(), target_host, timestamp)
-        update_module_hosts(in_modules, remote_socket.getpeername(), local_socket.getpeername(), target_host, timestamp)
+        update_module_hosts(out_modules, local_socket_addrport, remote_socket_addrport, target_host, timestamp)
+        update_module_hosts(in_modules, remote_socket_addrport, local_socket_addrport, target_host, timestamp)
 
-        if args.use_socks5:
-            (binded_ip, binded_port) = remote_socket.getsockname()
-            _event = socks5.Response(
-                socks5.RESP_STATUS["SUCCESS"],
-                socks5.ADDR_TYPE["IPV4"] if type(ipaddress.ip_address(binded_ip)) is ipaddress.IPv4Address else socks5.ADDR_TYPE["IPV6"],
-                binded_ip,
-                binded_port
-            )
-            # dirty fix for https://github.com/mike820324/socks5/issues/16
-            socks5_conn._conn._addr_type = _event.atyp
-            socks5_conn._conn._addr = _event.addr
-            socks5_conn._conn._port = _event.port
+        # We approve the SOCKS5 connection unconditionally above (before we connect to the server)
 
-            data = socks5_conn.send(_event)
-            local_socket.send(data)
+        # if args.use_socks5:
+        #     (binded_ip, binded_port) = remote_socket.getsockname()
+        #     _event = socks5.Response(
+        #         socks5.RESP_STATUS["SUCCESS"],
+        #         socks5.ADDR_TYPE["IPV4"] if type(ipaddress.ip_address(binded_ip)) is ipaddress.IPv4Address else socks5.ADDR_TYPE["IPV6"],
+        #         binded_ip,
+        #         binded_port
+        #     )
+        #     # dirty fix for https://github.com/mike820324/socks5/issues/16
+        #     socks5_conn._conn._addr_type = _event.atyp
+        #     socks5_conn._conn._addr = _event.addr
+        #     socks5_conn._conn._port = _event.port
+
+        #     data = socks5_conn.send(_event)
+        #     local_socket.send(data)
 
     except socket.error as serr:
         if serr.errno == errno.ENOTCONN:
@@ -551,21 +623,18 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
     # This loop ends when no more data is received on either the local or the
     # remote socket
     running = True
+    if sni is not None:
+        try:
+            remote_socket = enable_ssl_with_server(args, sni, remote_socket)
+            vprint("SSL enabled with server %s:%d (client: %s:%d)" % (*remote_socket_addrport, *local_socket_addrport), args.verbose)
+            log(args.logfile, "SSL enabled with server %s:%d (client: %s:%d)" % (*remote_socket_addrport, *local_socket_addrport))
+        except ssl.SSLError as e:
+            print("SSL handshake with server failed", str(e))
+            log(args.logfile, "SSL handshake with server failed", str(e))
+            sys.exit(3)
+
     while running:
         read_sockets, _, _ = select.select([remote_socket, local_socket], [], [])
-
-        if starttls(args, local_socket, read_sockets):
-            try:
-                ssl_sockets = enable_ssl(args, remote_socket, local_socket)
-                remote_socket, local_socket = ssl_sockets
-                vprint("SSL enabled", args.verbose)
-                log(args.logfile, "SSL enabled")
-            except ssl.SSLError as e:
-                print("SSL handshake failed", str(e))
-                log(args.logfile, "SSL handshake failed", str(e))
-                break
-
-            read_sockets, _, _ = select.select(ssl_sockets, [], [])
 
         for sock in read_sockets:
             try:
@@ -639,7 +708,7 @@ def log(handle, message, message_only=False):
 def vprint(msg, is_verbose):
     # this will print msg, but only if is_verbose is True
     if is_verbose:
-        print(msg)
+        print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg)
 
 
 def main():
