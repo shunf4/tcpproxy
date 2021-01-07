@@ -15,9 +15,7 @@ class Module:
         self.source = ("NO_SOURCE", "")
         self.destination = ("NO_DEST", "")
         self.logdir = None
-        self.remote_hostname = None
-        self.timestamp = None
-        self.timestamp_str = None
+        self.contexts = {}
         if options is not None:
             if 'length' in options.keys():
                 self.len = int(options['length'])
@@ -27,18 +25,36 @@ class Module:
             log_dir = str(options.get("logdir", ""))
             if log_dir != "":
                 self.logdir = path.abspath(log_dir)
+        
+    def create_context(self, timestamp):
+        ctx = {}
+        self.contexts[timestamp] = ctx
+        ctx["remote_hostname"] = None
+        ctx["timestamp"] = None
+        ctx["timestamp_str"] = None
+        ctx["source"] = None
+        ctx["destination"] = None
+
+        return ctx
 
     def help(self):
         return """
         \tlength: bytes per line (int)\n
         \twsdirection: set to 1 to enable wireshark direction indication\n
         \tlogdir: if not set, output to stdout; else output to log files under logdir\n"""
+    
+    def get_destination(self, timestamp):
+        return self.contexts.get(timestamp, {}).get("destination") or self.destination
 
-    def execute(self, data):
+    def get_source(self, timestamp):
+        return self.contexts.get(timestamp, {}).get("source") or self.source
+
+    def execute_ex(self, data, timestamp):
         result = []
         
         if self.wsdirection:
             result.append("I" if self.incoming else "O")
+        ctx = self.contexts[timestamp]
 
         # this is a pretty hex dumping function directly taken from
         # http://code.activestate.com/recipes/142812-hex-dumper/
@@ -50,13 +66,13 @@ class Module:
             text = ''.join([chr(x) if 0x20 <= x < 0x7F else '.' for x in s])
             result.append("%08X   %-*s   %s" % (i, self.len * (digits + 1), hexa, text))
         if self.logdir:
-            remote = self.source if self.incoming else self.destination
-            remote_addr = self.remote_hostname or remote[0]
+            remote = self.get_source(timestamp) if self.incoming else self.get_destination(timestamp)
+            remote_addr = ctx["remote_hostname"] or remote[0]
             remote_port = remote[1]
             remote_addr = HOSTNAME_INVALID_PATTERN.sub("_", str(remote_addr))
-            if self.timestamp_str is None:
-                self.timestamp_str = self.timestamp.strftime("%Y-%m-%d_%H-%M-%S-%f")
-            filename = "%s$$%s_%d.log" % (self.timestamp_str, remote_addr, remote_port)
+            if ctx["timestamp_str"] is None:
+                ctx["timestamp_str"] = ctx["timestamp"].strftime("%Y-%m-%d_%H-%M-%S-%f")
+            filename = "%s$$%s_%d.log" % (ctx["timestamp_str"], remote_addr, remote_port)
             with open(path.join(self.logdir, filename), "a") as f:
                 f.write("\n".join(result))
                 f.write("\n")

@@ -186,10 +186,16 @@ def update_module_hosts(modules, source, destination, remote_hostname, timestamp
                 m.source = source
             if hasattr(m, 'destination'):
                 m.destination = destination
-            if hasattr(m, 'remote_hostname'):
-                m.remote_hostname = remote_hostname
-            if hasattr(m, 'timestamp'):
-                m.timestamp = timestamp
+
+            create_context = getattr(m, 'create_context', None)
+            if callable(create_context):
+                ctx = create_context(timestamp)
+                ctx.update({
+                    'source': source,
+                    'destination': destination,
+                    'remote_hostname': remote_hostname,
+                    'timestamp': timestamp,
+                })
 
 
 def receive_from(s):
@@ -203,16 +209,23 @@ def receive_from(s):
     return b
 
 
-def handle_data(data, modules, dont_chain, incoming, verbose):
+def handle_data(data, timestamp, modules, dont_chain, incoming, verbose):
     # execute each active module on the data. If dont_chain is set, feed the
     # output of one plugin to the following plugin. Not every plugin will
     # necessarily modify the data, though.
     for m in modules:
         vprint(("> > > > in: " if incoming else "< < < < out: ") + m.name, verbose)
-        if dont_chain:
-            m.execute(data)
+        execute_ex = getattr(m, "execute_ex", None)
+        if execute_ex:
+            if dont_chain:
+                execute_ex(data, timestamp)
+            else:
+                data = execute_ex(data, timestamp)
         else:
-            data = m.execute(data)
+            if dont_chain:
+                m.execute(data)
+            else:
+                data = m.execute(data)
     return data
 
 
@@ -234,6 +247,9 @@ def try_into_ip(host):
         return None
 
 def create_host_cert(args, host):
+    vprint('Generating host certificate for %s' % host, args.verbose)
+    log(args.logfile, 'Generating host certificate for %s' % host)
+
     with open(args.ca_certificate, 'rb') as f:
         ca_cert_bytes = f.read()
     with open(args.ca_key, 'rb') as f:
@@ -242,8 +258,6 @@ def create_host_cert(args, host):
     ca_cert = x509.load_pem_x509_certificate(ca_cert_bytes, None)
     ca_key = serialization.load_pem_private_key(ca_key_bytes, None)
 
-    utf8_host = host.encode('utf-8')
-    
     cert_key = rsa.generate_private_key(
         public_exponent=65537,
         key_size=2048
@@ -284,10 +298,28 @@ def create_host_cert(args, host):
     ))
     cert_key_file.flush()
     cert_key_file.close()
+
+    vprint('Done generating host certificate for %s' % host, args.verbose)
+    log(args.logfile, 'Done generating host certificate for %s' % host)
     
     return (cert_file, cert_key_file)
 
 hostname_ctx_dict = {}
+
+def generate_ssl_default_ctx(args):
+    default_ctx = hostname_ctx_dict.get(None)
+    if default_ctx is None:
+        default_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        
+        (tmp_cert_file, tmp_cert_key_file) = create_host_cert(args, "temp_default")
+        
+        default_ctx.load_cert_chain(certfile=tmp_cert_file.name,
+                            keyfile=tmp_cert_key_file.name,
+                            )
+        os.unlink(tmp_cert_file.name)
+        os.unlink(tmp_cert_key_file.name)
+        hostname_ctx_dict[None] = default_ctx
+
 def enable_ssl(args, remote_socket, local_socket):
     sni = None
 
@@ -305,21 +337,15 @@ def enable_ssl(args, remote_socket, local_socket):
             os.unlink(cert_file.name)
             os.unlink(cert_key_file.name)
         sock.context = new_ctx
-    
 
     try:
-        ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        ctx.sni_callback = sni_callback
-        (tmp_cert_file, tmp_cert_key_file) = create_host_cert(args, "temp_default")
-        
-        ctx.load_cert_chain(certfile=tmp_cert_file.name,
-                            keyfile=tmp_cert_key_file.name,
-                            )
-        os.unlink(tmp_cert_file.name)
-        os.unlink(tmp_cert_key_file.name)
-        local_socket = ctx.wrap_socket(local_socket,
-                                       server_side=True,
-                                       )
+        default_ctx = hostname_ctx_dict.get(None)
+
+        default_ctx.sni_callback = sni_callback
+
+        local_socket = default_ctx.wrap_socket(local_socket,
+                            server_side=True,
+                        )
     except ssl.SSLError as e:
         print("SSL handshake failed for listening socket", str(e))
         print("=== Traceback ===")
@@ -330,11 +356,14 @@ def enable_ssl(args, remote_socket, local_socket):
     try:
         ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
         ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        ctx.verify_mode = ssl.CERT_OPTIONAL
         if args.client_certificate and args.client_key:
             ctx.load_cert_chain(certfile=args.client_certificate,
                                 keyfile=args.client_key,
                                 )
+        
+        vprint('Connecting to target using SNI %s' % sni, args.verbose)
+        log(args.logfile, 'Connecting to target using SNI %s' % sni)
         remote_socket = ctx.wrap_socket(remote_socket,
                                         server_hostname=sni,
                                         )
@@ -357,7 +386,7 @@ def starttls(args, local_socket, read_sockets):
 
 
 def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules):
-    target_ip = args.target_ip
+    target_host = args.target_ip
     target_port = args.target_port
 
     # do SOCKS5 if SOCKS5 mode enabled
@@ -394,19 +423,21 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
             print("%s:%d : SOCKS5 client didn't want to connect; exit" % in_addrinfo)
             sys.exit(102)
 
-        target_ip = str(_event.addr)
+        target_host = str(_event.addr)
         target_port = int(_event.port)
 
-    if not is_valid_ip4(target_ip):
+    if not is_valid_ip4(target_host):
         try:
-            ip = socket.gethostbyname(target_ip)
+            ip = socket.gethostbyname(target_host)
         except socket.gaierror:
             ip = False
         if ip is False:
-            print('%s is not a valid IP address or host name' % target_ip)
+            print('%s is not a valid IP address or host name' % target_host)
             sys.exit(2)
         else:
             target_ip = ip
+    else:
+        target_ip = target_host
 
     # This method is executed in a thread. It will relay data between the local
     # host and the remote host, while letting modules work on the data before
@@ -426,8 +457,8 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
         if serr.errno == errno.ECONNREFUSED:
             for s in [remote_socket, local_socket]:
                 s.close()
-            print(f'{time.strftime("%Y%m%d-%H%M%S")}, {target_ip}:{target_port}- Connection refused')
-            log(args.logfile, f'{time.strftime("%Y%m%d-%H%M%S")}, {target_ip}:{target_port}- Connection refused')
+            print(f'{time.strftime("%Y%m%d-%H%M%S")}, {target_host}:{target_port}- Connection refused')
+            log(args.logfile, f'{time.strftime("%Y%m%d-%H%M%S")}, {target_host}:{target_port}- Connection refused')
 
             if args.use_socks5:
                 _event = socks5.Response(
@@ -443,8 +474,8 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
         elif serr.errno == errno.ETIMEDOUT:
             for s in [remote_socket, local_socket]:
                 s.close()
-            print(f'{time.strftime("%Y%m%d-%H%M%S")}, {target_ip}:{target_port}- Connection timed out')
-            log(args.logfile, f'{time.strftime("%Y%m%d-%H%M%S")}, {target_ip}:{target_port}- Connection timed out')
+            print(f'{time.strftime("%Y%m%d-%H%M%S")}, {target_host}:{target_port}- Connection timed out')
+            log(args.logfile, f'{time.strftime("%Y%m%d-%H%M%S")}, {target_host}:{target_port}- Connection timed out')
 
             if args.use_socks5:
                 _event = socks5.Response(
@@ -482,10 +513,10 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
                 s.close()
             raise serr
 
+    timestamp = datetime.datetime.utcnow()
     try:
-        timestamp = datetime.datetime.utcnow()
-        update_module_hosts(out_modules, local_socket.getpeername(), remote_socket.getpeername(), None if args.target_ip == target_ip else args.target_ip, timestamp)
-        update_module_hosts(in_modules, remote_socket.getpeername(), local_socket.getpeername(), None if args.target_ip == target_ip else args.target_ip, timestamp)
+        update_module_hosts(out_modules, local_socket.getpeername(), remote_socket.getpeername(), target_host, timestamp)
+        update_module_hosts(in_modules, remote_socket.getpeername(), local_socket.getpeername(), target_host, timestamp)
 
         if args.use_socks5:
             (binded_ip, binded_port) = remote_socket.getsockname()
@@ -559,7 +590,7 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
                 if len(data):
                     log(args.logfile, b'< < < out\n' + data)
                     if out_modules is not None:
-                        data = handle_data(data, out_modules,
+                        data = handle_data(data, timestamp, out_modules,
                                            args.no_chain_modules,
                                            False,  # incoming data?
                                            args.verbose)
@@ -574,7 +605,7 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
                 if len(data):
                     log(args.logfile, b'> > > in\n' + data)
                     if in_modules is not None:
-                        data = handle_data(data, in_modules,
+                        data = handle_data(data, timestamp, in_modules,
                                            args.no_chain_modules,
                                            True,  # incoming data?
                                            args.verbose)
@@ -674,6 +705,9 @@ def main():
         out_modules = generate_module_list(args.out_modules, incoming=False, verbose=args.verbose)
     else:
         out_modules = None
+
+    if args.use_ssl:
+        generate_ssl_default_ctx(args)
 
     # this is the socket we will listen on for incoming connections
     proxy_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
