@@ -214,8 +214,8 @@ def update_module_hosts(modules, source, destination, remote_hostname, timestamp
 
 def receive_from(s):
     # receive data from a socket until no more data is there
-    b = b""
-    while True:
+    b = bytearray(b"")
+    while len(b) < 81920:
         data = s.recv(4096)
         b += data
         if not data or len(data) < 4096:
