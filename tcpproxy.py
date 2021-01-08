@@ -632,7 +632,7 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
             sys.exit(3)
 
     while running:
-        read_sockets, _, _ = select.select([remote_socket, local_socket], [], [])
+        read_sockets, _, _ = select.select([remote_socket, local_socket], [], [], 1)
 
         for sock in read_sockets:
             try:
