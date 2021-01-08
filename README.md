@@ -9,26 +9,23 @@ This tool is inspired by and partially based on the TCP proxy example used in Ju
 
 ```
 $ ./tcpproxy.py -h
-usage: tcpproxy.py [-h] [-ti TARGET_IP] [-tp TARGET_PORT] [-li LISTEN_IP]
-                   [-lp LISTEN_PORT] [-pi PROXY_IP] [-pp PROXY_PORT]
-                   [-pt {SOCKS4,SOCKS5,HTTP}] [-om OUT_MODULES]
-                   [-im IN_MODULES] [-v] [-n] [-l LOGFILE] [--list]
-                   [-lo HELP_MODULES] [-s] [-sc SERVER_CERTIFICATE]
-                   [-sk SERVER_KEY] [-cc CLIENT_CERTIFICATE] [-ck CLIENT_KEY]
+usage: tcpproxy.py [-h] [-ti TARGET_IP] [-tp TARGET_PORT] [-li LISTEN_IP] [-lp LISTEN_PORT] [-s5] [-pi PROXY_IP] [-pp PROXY_PORT] [-pt {SOCKS4,SOCKS5,HTTP}]
+                   [-om OUT_MODULES] [-im IN_MODULES] [-v] [-n] [-l LOGFILE] [--list] [-lo HELP_MODULES] [-s] [-ac CA_CERTIFICATE] [-ak CA_KEY]
+                   [-cc CLIENT_CERTIFICATE] [-ck CLIENT_KEY]
 
-Simple TCP proxy for data interception and modification. Select modules to
-handle the intercepted traffic.
+Simple TCP proxy for data interception and modification. Select modules to handle the intercepted traffic.
 
 optional arguments:
   -h, --help            show this help message and exit
   -ti TARGET_IP, --targetip TARGET_IP
-                        remote target IP or host name
+                        remote target IP or host name. not effective when using SOCKS5 mode.
   -tp TARGET_PORT, --targetport TARGET_PORT
-                        remote target port
+                        remote target port. not effective when using SOCKS5 mode.
   -li LISTEN_IP, --listenip LISTEN_IP
-                        IP address/host name to listen for incoming data
+                        IP address/host name to listen for incoming data (or SOCKS5 client connection)
   -lp LISTEN_PORT, --listenport LISTEN_PORT
-                        port to listen on
+                        port to listen on for incoming data (or SOCKS5 client connection)
+  -s5, --socks5         enable SOCKS5 mode (acts as a SOCKS5 server and intercept proxy connections)
   -pi PROXY_IP, --proxy-ip PROXY_IP
                         IP address/host name of proxy
   -pp PROXY_PORT, --proxy-port PROXY_PORT
@@ -36,11 +33,9 @@ optional arguments:
   -pt {SOCKS4,SOCKS5,HTTP}, --proxy-type {SOCKS4,SOCKS5,HTTP}
                         proxy type. Options are SOCKS5 (default), SOCKS4, HTTP
   -om OUT_MODULES, --outmodules OUT_MODULES
-                        comma-separated list of modules to modify data before
-                        sending to remote target.
+                        comma-separated list of modules to modify data before sending to remote target.
   -im IN_MODULES, --inmodules IN_MODULES
-                        comma-separated list of modules to modify data
-                        received from the remote target.
+                        comma-separated list of modules to modify data received from the remote target.
   -v, --verbose         More verbose output of status information
   -n, --no-chain        Don't send output from one module to the next one
   -l LOGFILE, --log LOGFILE
@@ -49,20 +44,18 @@ optional arguments:
   -lo HELP_MODULES, --list-options HELP_MODULES
                         Print help of selected module
   -s, --ssl             detect SSL/TLS as well as STARTTLS
-  -sc SERVER_CERTIFICATE, --server-certificate SERVER_CERTIFICATE
-                        server certificate in PEM format (default: mitm.pem)
-  -sk SERVER_KEY, --server-key SERVER_KEY
-                        server key in PEM format (default: mitm.pem)
+  -ac CA_CERTIFICATE, --ca-certificate CA_CERTIFICATE
+                        ca certificate (for signing server certificate) in PEM format (default: mitm.pem)
+  -ak CA_KEY, --ca-key CA_KEY
+                        ca certificate (for signing server certificate) key in PEM format (default: mitm.pem)
   -cc CLIENT_CERTIFICATE, --client-certificate CLIENT_CERTIFICATE
-                        client certificate in PEM format in case client
-                        authentication is required by the target
+                        client certificate in PEM format in case client authentication is required by the target
   -ck CLIENT_KEY, --client-key CLIENT_KEY
-                        client key in PEM format in case client authentication
-                        is required by the target
+                        client key in PEM format in case client authentication is required by the target
 ```
 
 You will have to  provide TARGET_IP and TARGET_PORT, the default listening settings are 0.0.0.0:8080. To make the program actually useful, you will have to decide which modules you want to use on outgoing (client to server) and incoming (server to client) traffic. You can use different modules for each direction. Pass the list of modules as comma-separated list, e.g. -im mod1,mod4,mod2. The data will be passed to the first module, the returned data will be passed to the second module and so on, unless you use the -n/--no/chain switch. In that case, every module will receive the original data.
-You can also pass options to each module: -im mod1:key1=val1,mod4,mod2:key1=val1:key2=val2:key3="v:a:l:3". To learn which options you can pass to a module use -lo/--list-options like this: -lo mod1,mod2,mod4
+You can also pass options to each module: `-im mod1:key1=val1,mod4,mod2:key1=val1:key2=val2:key3="val3:with:colons"`. To learn which options you can pass to a module use -lo/--list-options like this: `-lo mod1,mod2,mod4`
 
 ## Modules
 
