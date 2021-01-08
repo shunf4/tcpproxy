@@ -632,9 +632,6 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
             sys.exit(3)
 
     while running:
-        vprint("Waiting (server %s:%d, client: %s:%d)" % (*remote_socket_addrport, *local_socket_addrport), args.verbose)
-        log(args.logfile, "Waiting (server %s:%d, client: %s:%d)" % (*remote_socket_addrport, *local_socket_addrport))
-
         read_sockets, _, _ = select.select([remote_socket, local_socket], [], [], 1)
 
         for sock in read_sockets:
@@ -653,9 +650,9 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
                     print(f"{time.strftime('%Y%m%d-%H%M%S')}: Socket exception in start_proxy_thread")
                     raise serr
 
-            print("Receiving... %s" % sock)
+            # print("Receiving... %s" % sock)
             data = receive_from(sock)
-            print("Done receiving")
+            # print("Done receiving")
             log(args.logfile, 'Received %d bytes' % len(data))
 
             if sock == local_socket:
