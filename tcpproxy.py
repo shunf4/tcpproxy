@@ -638,8 +638,20 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
             log(args.logfile, "SSL handshake with server failed", str(e))
             sys.exit(3)
 
+    remote_ssl_wants_read = False
+    local_ssl_wants_read = False
     while running:
-        read_sockets, _, _ = select.select([remote_socket, local_socket], [], [], 1)
+        sockets_to_read = []
+        if remote_ssl_wants_read:
+            remote_ssl_wants_read = False
+        else:
+            sockets_to_read.append(remote_socket)
+        if local_ssl_wants_read:
+            local_ssl_wants_read = False
+        else:
+            sockets_to_read.append(local_socket)
+            
+        read_sockets, _, _ = select.select(sockets_to_read, [], [], 0.1)
 
         for sock in read_sockets:
             try:
@@ -660,9 +672,13 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
             data, err = receive_from(sock)
             if err is not None:
                 if isinstance(err, ssl.SSLWantReadError):
-                    vprint("SSLWantReadError with %s:%d" % peer, args.verbose)
-                    log(args.logfile, "SSLWantReadError with %s:%d" % peer)
                     if len(data) == 0:
+                        vprint("len(data) == 0 with SSLWantReadError, with %s:%d" % peer, args.verbose)
+                        log(args.logfile, "len(data) == 0 with SSLWantReadError, with %s:%d" % peer)
+                        if sock == local_socket:
+                            local_ssl_wants_read = True
+                        else:
+                            remote_ssl_wants_read = True
                         continue
                 else:
                     raise err
