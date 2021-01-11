@@ -214,7 +214,6 @@ def update_module_hosts(modules, source, destination, remote_hostname, timestamp
 
 def receive_from(s):
     # receive data from a socket until no more data is there
-    # returns error if SSLWantReadError is raised
     b = bytearray(b"")
     while len(b) < 81920:
         try:
@@ -226,32 +225,6 @@ def receive_from(s):
             break
     return b, None
 
-def send_to(s, data, peer, args):
-    # write data to a socket until no more data is about to be sent
-    # retry if SSLWantWriteError is raised
-    if hasattr(s, "_sslobj") and s._sslobj is not None:
-        count = 0
-        with memoryview(data) as view, view.cast("B") as byte_view:
-            amount = len(byte_view)
-            want_write = False
-            while count < amount:
-                if want_write:
-                    time.sleep(0.1)
-                    want_write = False
-                    continue
-                else:
-                    pass
-
-                try:
-                    v = s.send(byte_view[count:])
-                except ssl.SSLWantWriteError as e:
-                    vprint("SSLWantWriteError, with %s:%d" % peer, args.verbose)
-                    log(args.logfile, "SSLWantWriteError, with %s:%d" % peer)
-                    want_write = True
-                    continue
-                count += v
-    else:
-        return s.sendall(data)
 
 def handle_data(data, timestamp, modules, dont_chain, incoming, verbose):
     # execute each active module on the data. If dont_chain is set, feed the
@@ -665,20 +638,8 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
             log(args.logfile, "SSL handshake with server failed", str(e))
             sys.exit(3)
 
-    remote_ssl_wants_read = False
-    local_ssl_wants_read = False
     while running:
-        sockets_to_read = []
-        if remote_ssl_wants_read:
-            remote_ssl_wants_read = False
-        else:
-            sockets_to_read.append(remote_socket)
-        if local_ssl_wants_read:
-            local_ssl_wants_read = False
-        else:
-            sockets_to_read.append(local_socket)
-            
-        read_sockets, _, _ = select.select(sockets_to_read, [], [], 0.1)
+        read_sockets, _, _ = select.select([remote_socket, local_socket], [], [], 1)
 
         for sock in read_sockets:
             try:
@@ -699,13 +660,9 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
             data, err = receive_from(sock)
             if err is not None:
                 if isinstance(err, ssl.SSLWantReadError):
+                    vprint("SSLWantReadError with %s:%d" % peer, args.verbose)
+                    log(args.logfile, "SSLWantReadError with %s:%d" % peer)
                     if len(data) == 0:
-                        vprint("len(data) == 0 with SSLWantReadError, with %s:%d" % peer, args.verbose)
-                        log(args.logfile, "len(data) == 0 with SSLWantReadError, with %s:%d" % peer)
-                        if sock == local_socket:
-                            local_ssl_wants_read = True
-                        else:
-                            remote_ssl_wants_read = True
                         continue
                 else:
                     raise err
@@ -718,7 +675,7 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
                                            args.no_chain_modules,
                                            False,  # incoming data?
                                            args.verbose)
-                    send_to(remote_socket, data.encode() if isinstance(data, str) else data, peer, args)
+                    remote_socket.send(data.encode() if isinstance(data, str) else data)
                 else:
                     vprint("Connection from local client %s:%d closed" % peer, args.verbose)
                     log(args.logfile, "Connection from local client %s:%d closed" % peer)
@@ -733,7 +690,7 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
                                            args.no_chain_modules,
                                            True,  # incoming data?
                                            args.verbose)
-                    send_to(local_socket, data.encode() if isinstance(data, str) else data, peer, args)
+                    local_socket.send(data)
                 else:
                     vprint("Connection to remote server %s:%d closed" % peer, args.verbose)
                     log(args.logfile, "Connection to remote server %s:%d closed" % peer)
