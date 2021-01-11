@@ -216,11 +216,14 @@ def receive_from(s):
     # receive data from a socket until no more data is there
     b = bytearray(b"")
     while len(b) < 81920:
-        data = s.recv(4096)
+        try:
+            data = s.recv(4096)
+        except Exception as e:
+            return b, e
         b += data
         if not data or len(data) < 4096:
             break
-    return b
+    return b, None
 
 
 def handle_data(data, timestamp, modules, dont_chain, incoming, verbose):
@@ -334,6 +337,8 @@ def generate_ssl_default_ctx(args):
         os.unlink(tmp_cert_key_file.name)
         hostname_ctx_dict[None] = default_ctx
 
+SSL_BLOCKING = 0
+
 def enable_ssl_with_client(args, local_socket):
     sni = None
 
@@ -367,6 +372,7 @@ def enable_ssl_with_client(args, local_socket):
         print("===    End    ===")
         raise
 
+    local_socket.setblocking(SSL_BLOCKING)
     return (local_socket, sni)
 
 def enable_ssl_with_server(args, sni, remote_socket):
@@ -394,6 +400,7 @@ def enable_ssl_with_server(args, sni, remote_socket):
         print("===    End    ===")
         raise
 
+    remote_socket.setblocking(SSL_BLOCKING)
     return remote_socket
 
 
@@ -650,10 +657,15 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
                     print(f"{time.strftime('%Y%m%d-%H%M%S')}: Socket exception in start_proxy_thread")
                     raise serr
 
-            # print("Receiving... %s" % sock)
-            data = receive_from(sock)
-            # print("Done receiving")
-            log(args.logfile, 'Received %d bytes' % len(data))
+            data, err = receive_from(sock)
+            if err is not None:
+                if isinstance(err, ssl.SSLWantReadError):
+                    vprint("SSLWantReadError with %s:%d" % peer, args.verbose)
+                    log(args.logfile, "SSLWantReadError with %s:%d" % peer)
+                    if len(data) == 0:
+                        continue
+                else:
+                    raise err
 
             if sock == local_socket:
                 if len(data):
