@@ -229,7 +229,7 @@ def receive_from(s):
 def send_to(s, data, peer, args):
     # write data to a socket until no more data is about to be sent
     # retry if SSLWantWriteError is raised
-    if s._sslobj is not None:
+    if hasattr(s, "_sslobj") and s._sslobj is not None:
         count = 0
         with memoryview(data) as view, view.cast("B") as byte_view:
             amount = len(byte_view)
