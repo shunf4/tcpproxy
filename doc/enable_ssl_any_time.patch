@@ -1,0 +1,41 @@
+diff --git a/tcpproxy.py b/tcpproxy.py
+index 6b78e8f..78b052f 100755
+--- a/tcpproxy.py
++++ b/tcpproxy.py
+@@ -532,7 +532,6 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
+     # host and the remote host, while letting modules work on the data before
+     # passing it on.
+     remote_socket = socks.socksocket()
+-    remote_socket.getsockname
+ 
+     if args.proxy_ip:
+         proxy_types = {'SOCKS5': socks.SOCKS5, 'SOCKS4': socks.SOCKS4, 'HTTP': socks.HTTP}
+@@ -696,6 +695,28 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
+                     print(f"{time.strftime('%Y%m%d-%H%M%S')}: Socket exception in start_proxy_thread")
+                     raise serr
+ 
++            if sock == local_socket:
++                if sni is None:
++                    if starttls(args, local_socket, read_sockets):
++                        try:
++                            local_socket, sni = enable_ssl_with_client(args, local_socket)
++                            vprint("SSL enabled with client %s:%d" % local_socket_addrport, args.verbose)
++                            log(args.logfile, "SSL enabled with client %s:%d" % local_socket_addrport)
++                        except ssl.SSLError as e:
++                            print("SSL handshake with client failed", str(e))
++                            log(args.logfile, "SSL handshake with client failed", str(e))
++                            sys.exit(4)
++
++                        try:
++                            remote_socket = enable_ssl_with_server(args, sni, remote_socket)
++                            vprint("SSL enabled with server %s:%d (client: %s:%d)" % (*remote_socket_addrport, *local_socket_addrport), args.verbose)
++                            log(args.logfile, "SSL enabled with server %s:%d (client: %s:%d)" % (*remote_socket_addrport, *local_socket_addrport))
++                        except ssl.SSLError as e:
++                            print("SSL handshake with server failed", str(e))
++                            log(args.logfile, "SSL handshake with server failed", str(e))
++                            sys.exit(3)
++                        break
++
+             data, err = receive_from(sock)
+             if err is not None:
+                 if isinstance(err, ssl.SSLWantReadError):
