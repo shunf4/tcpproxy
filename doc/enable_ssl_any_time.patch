@@ -2,14 +2,6 @@ diff --git a/tcpproxy.py b/tcpproxy.py
 index 6b78e8f..78b052f 100755
 --- a/tcpproxy.py
 +++ b/tcpproxy.py
-@@ -532,7 +532,6 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
-     # host and the remote host, while letting modules work on the data before
-     # passing it on.
-     remote_socket = socks.socksocket()
--    remote_socket.getsockname
- 
-     if args.proxy_ip:
-         proxy_types = {'SOCKS5': socks.SOCKS5, 'SOCKS4': socks.SOCKS4, 'HTTP': socks.HTTP}
 @@ -696,6 +695,28 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
                      print(f"{time.strftime('%Y%m%d-%H%M%S')}: Socket exception in start_proxy_thread")
                      raise serr
