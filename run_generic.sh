@@ -40,10 +40,23 @@ if [ ! -z "$LAST_PPID" ]; then
 	taskkill /f /pid `pgrep -P $LAST_PPID` || true
 fi
 
-if [ "$1" == "--main-log-to-console" ] || [ "$2" == "--main-log-to-console" ] ; then
-	python3 -u "$DIR"/tcpproxy.py -s5 -lp "$PORT" -ac "$CA_PEM" -ak "$CA_KEY_PEM" -s -v -im "hexdump:wsdirection=1:logdir=\"$LOG_DIR_1089\"" -om "hexdump:wsdirection=1:logdir=\"$LOG_DIR_1089\""
+FLAG_CONN_LOG=''
+TEST_FLAG="--log-conn"
+if [ "$1" == "$TEST_FLAG" ] || [ "$2" == "$TEST_FLAG" ] || [ "$3" == "$TEST_FLAG" ] || [ "$4" == "$TEST_FLAG" ]; then
+	FLAG_CONN_LOG='-im "hexdump:wsdirection=1:logdir=\"$LOG_DIR_1089\"" -om "hexdump:wsdirection=1:logdir=\"$LOG_DIR_1089\""'
+fi
+
+FLAG_DECRYPT_TLS=''
+TEST_FLAG="--decrypt-tls"
+if [ "$1" == "$TEST_FLAG" ] || [ "$2" == "$TEST_FLAG" ] || [ "$3" == "$TEST_FLAG" ] || [ "$4" == "$TEST_FLAG" ]; then
+	FLAG_DECRYPT_TLS='-s'
+fi
+
+TEST_FLAG="--main-log-to-console"
+if [ "$1" == "$TEST_FLAG" ] || [ "$2" == "$TEST_FLAG" ] || [ "$3" == "$TEST_FLAG" ] || [ "$4" == "$TEST_FLAG" ]; then
+	python3 -u "$DIR"/tcpproxy.py -s5 -lp "$PORT" -ac "$CA_PEM" -ak "$CA_KEY_PEM" $(echo "$FLAG_DECRYPT_TLS") -v $(echo "$FLAG_CONN_LOG")
 else
-	python3 -u "$DIR"/tcpproxy.py -s5 -lp "$PORT" -ac "$CA_PEM" -ak "$CA_KEY_PEM" -s -v -im "hexdump:wsdirection=1:logdir=\"$LOG_DIR_1089\"" -om "hexdump:wsdirection=1:logdir=\"$LOG_DIR_1089\"" > $LOG_DIR"main_$(date +%Y%m%d_%H%M%S).log" 2>&1 &
+	python3 -u "$DIR"/tcpproxy.py -s5 -lp "$PORT" -ac "$CA_PEM" -ak "$CA_KEY_PEM" $(echo "$FLAG_DECRYPT_TLS") -v $(echo "$FLAG_CONN_LOG") > $LOG_DIR"main_$(date +%Y%m%d_%H%M%S).log" 2>&1 &
 fi
 
 MAIN_PPID=$!

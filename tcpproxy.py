@@ -354,6 +354,12 @@ def generate_ssl_default_ctx(args):
     default_ctx = hostname_ctx_dict.get(None)
     if default_ctx is None:
         default_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        default_ctx.options &= ~ssl.OP_NO_SSLv3
+        default_ctx.options &= ~ssl.OP_NO_SSLv2
+        default_ctx.options &= ~ssl.OP_NO_TLSv1
+        default_ctx.options &= ~ssl.OP_NO_TLSv1_1
+        default_ctx.options &= ~ssl.OP_NO_TLSv1_2
+        default_ctx.set_ciphers('ALL:eNULL')
         
         (tmp_cert_file, tmp_cert_key_file) = create_host_cert(args, "temp_default")
         
@@ -366,10 +372,13 @@ def generate_ssl_default_ctx(args):
 
 SSL_BLOCKING = 0
 
-def enable_ssl_with_client(args, local_socket):
+def enable_ssl_with_client(args, local_socket, fallback_sni_name):
     sni = None
 
     def sni_callback(sock, name, ctx):
+        if name is None: # Old TLS/SSL impl
+            name = fallback_sni_name
+    
         nonlocal sni
         sni = name
         
@@ -400,6 +409,9 @@ def enable_ssl_with_client(args, local_socket):
         raise
 
     local_socket.setblocking(SSL_BLOCKING)
+    if sni is None:
+        print("sni_callback never called!")
+        raise Exception("sni_callback never called!")
     return (local_socket, sni)
 
 def enable_ssl_with_server(args, sni, remote_socket):
@@ -520,7 +532,7 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
 
     if starttls(args, local_socket, read_sockets):
         try:
-            local_socket, sni = enable_ssl_with_client(args, local_socket)
+            local_socket, sni = enable_ssl_with_client(args, local_socket, target_host)
             vprint("SSL enabled with client %s:%d" % local_socket_addrport, args.verbose)
             log(args.logfile, "SSL enabled with client %s:%d" % local_socket_addrport)
         except ssl.SSLError as e:
