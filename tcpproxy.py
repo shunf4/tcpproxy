@@ -22,6 +22,9 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography import x509
 
+if '' not in sys.path:
+    sys.path.insert(0, '')
+
 # TODO: implement verbose output
 # some code snippets, as well as the original idea, from Black Hat Python
 
@@ -327,7 +330,7 @@ def create_host_cert(args, host):
     else:
         sans.append(x509.IPAddress(ip))
     builder = builder.add_extension(x509.SubjectAlternativeName(sans), critical=False)
-    cert = builder.sign(private_key=ca_key, algorithm=hashes.SHA256())
+    cert = builder.sign(private_key=ca_key, algorithm=hashes.SHA1())
     
     cert_file = tempfile.NamedTemporaryFile(delete=False)
     cert_file.write(cert.public_bytes(serialization.Encoding.PEM))
@@ -350,16 +353,19 @@ def create_host_cert(args, host):
 
 hostname_ctx_dict = {}
 
+def make_ssl_ctx_insecure(ctx):
+    ctx.options &= ~ssl.OP_NO_SSLv3
+    ctx.options &= ~ssl.OP_NO_SSLv2
+    ctx.options &= ~ssl.OP_NO_TLSv1
+    ctx.options &= ~ssl.OP_NO_TLSv1_1
+    ctx.options &= ~ssl.OP_NO_TLSv1_2
+    ctx.set_ciphers('ALL:@SECLEVEL=0')
+    ctx.minimum_version = ssl.TLSVersion.SSLv3
+
 def generate_ssl_default_ctx(args):
     default_ctx = hostname_ctx_dict.get(None)
     if default_ctx is None:
         default_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        default_ctx.options &= ~ssl.OP_NO_SSLv3
-        default_ctx.options &= ~ssl.OP_NO_SSLv2
-        default_ctx.options &= ~ssl.OP_NO_TLSv1
-        default_ctx.options &= ~ssl.OP_NO_TLSv1_1
-        default_ctx.options &= ~ssl.OP_NO_TLSv1_2
-        default_ctx.set_ciphers('ALL:eNULL')
         
         (tmp_cert_file, tmp_cert_key_file) = create_host_cert(args, "temp_default")
         
@@ -368,6 +374,9 @@ def generate_ssl_default_ctx(args):
                             )
         os.unlink(tmp_cert_file.name)
         os.unlink(tmp_cert_key_file.name)
+        
+        make_ssl_ctx_insecure(default_ctx)
+        
         hostname_ctx_dict[None] = default_ctx
 
 SSL_BLOCKING = 0
@@ -391,13 +400,13 @@ def enable_ssl_with_client(args, local_socket, fallback_sni_name):
             hostname_ctx_dict[name] = new_ctx
             os.unlink(cert_file.name)
             os.unlink(cert_key_file.name)
+            make_ssl_ctx_insecure(new_ctx)
         sock.context = new_ctx
 
     try:
         default_ctx = hostname_ctx_dict.get(None)
-
+        
         default_ctx.sni_callback = sni_callback
-
         local_socket = default_ctx.wrap_socket(local_socket,
                             server_side=True,
                         )
@@ -874,7 +883,7 @@ def main():
     except KeyboardInterrupt:
         log(args.logfile, 'Ctrl+C detected, exiting...')
         print('\nCtrl+C detected, exiting...')
-        sys.exit(0)
+        os._exit(0)
 
 
 if __name__ == '__main__':
