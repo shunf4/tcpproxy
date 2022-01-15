@@ -39,6 +39,8 @@ fi
 
 if [ -z "$LOG_DIR" ]; then
 	LOG_DIR="c:/path/to/log/dir/"
+else
+	mkdir -p "$LOG_DIR"
 fi
 
 if [ -z "$FLAG_SHOULD_OUTPUT_TO_FILE" ]; then
