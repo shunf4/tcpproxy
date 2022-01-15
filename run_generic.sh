@@ -20,6 +20,7 @@ while true; do
 		--decrypt-tls ) FLAG_SHOULD_DECRYPT_TLS='-s'; shift ;;
 		--output-to-file ) FLAG_SHOULD_OUTPUT_TO_FILE=1; shift ;;
 		--port ) PORT="$2"; shift; shift ;;
+		--python-bin ) PYTHON_BIN="$2"; shift; shift ;;
 		-- ) shift; break ;;
 		* ) break ;;
 	esac
@@ -43,8 +44,12 @@ else
 	mkdir -p "$LOG_DIR"
 fi
 
+if [ -z "$PYTHON_BIN" ]; then
+	PYTHON_BIN="python3"
+fi
+
 if [ -z "$FLAG_SHOULD_OUTPUT_TO_FILE" ]; then
-	python3 -u "$DIR"/tcpproxy.py -s5 -lp "$PORT" -ac "$CA_PEM" -ak "$CA_KEY_PEM" ${FLAG_SHOULD_DECRYPT_TLS:+"$FLAG_SHOULD_DECRYPT_TLS"} -v ${FLAG_ENABLE_TEXT_DUMP:+"-im" "textdump:logdir=\"$LOG_DIR\"" "-om" "textdump:logdir=\"$LOG_DIR\""} ${FLAG_ENABLE_HEX_DUMP:+"-im" "hexdump:wsdirection=1:logdir=\"$LOG_DIR\"" "-om" "hexdump:wsdirection=1:logdir=\"$LOG_DIR\""} $@
+	"$PYTHON_BIN" -u "$DIR"/tcpproxy.py -s5 -lp "$PORT" -ac "$CA_PEM" -ak "$CA_KEY_PEM" ${FLAG_SHOULD_DECRYPT_TLS:+"$FLAG_SHOULD_DECRYPT_TLS"} -v ${FLAG_ENABLE_TEXT_DUMP:+"-im" "textdump:logdir=\"$LOG_DIR\"" "-om" "textdump:logdir=\"$LOG_DIR\""} ${FLAG_ENABLE_HEX_DUMP:+"-im" "hexdump:wsdirection=1:logdir=\"$LOG_DIR\"" "-om" "hexdump:wsdirection=1:logdir=\"$LOG_DIR\""} $@
 else
-	python3 -u "$DIR"/tcpproxy.py -s5 -lp "$PORT" -ac "$CA_PEM" -ak "$CA_KEY_PEM" ${FLAG_SHOULD_DECRYPT_TLS:+"$FLAG_SHOULD_DECRYPT_TLS"} -v ${FLAG_ENABLE_TEXT_DUMP:+"-im" "textdump:logdir=\"$LOG_DIR\"" "-om" "textdump:logdir=\"$LOG_DIR\""} ${FLAG_ENABLE_HEX_DUMP:+"-im" "hexdump:wsdirection=1:logdir=\"$LOG_DIR\"" "-om" "hexdump:wsdirection=1:logdir=\"$LOG_DIR\""} $@ > $LOG_DIR"main_$(date +%Y%m%d_%H%M%S).log" 2>&1
+	"$PYTHON_BIN" -u "$DIR"/tcpproxy.py -s5 -lp "$PORT" -ac "$CA_PEM" -ak "$CA_KEY_PEM" ${FLAG_SHOULD_DECRYPT_TLS:+"$FLAG_SHOULD_DECRYPT_TLS"} -v ${FLAG_ENABLE_TEXT_DUMP:+"-im" "textdump:logdir=\"$LOG_DIR\"" "-om" "textdump:logdir=\"$LOG_DIR\""} ${FLAG_ENABLE_HEX_DUMP:+"-im" "hexdump:wsdirection=1:logdir=\"$LOG_DIR\"" "-om" "hexdump:wsdirection=1:logdir=\"$LOG_DIR\""} $@ > $LOG_DIR"main_$(date +%Y%m%d_%H%M%S).log" 2>&1
 fi
