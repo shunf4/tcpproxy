@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import os.path as path
+import re
+import datetime
 from codecs import decode, lookup
 
-
+HOSTNAME_INVALID_PATTERN = re.compile("[^a-zA-Z0-9._-]")
 class Module:
     def __init__(self, incoming=False, verbose=False, options=None):
         # extract the file name from __file__. __file__ is proxymodules/name.py
@@ -10,7 +12,12 @@ class Module:
         self.description = 'Simply print the received data as text'
         self.incoming = incoming  # incoming means module is on -im chain
         self.find = None  # if find is not None, this text will be highlighted
-        self.codec = 'latin_1'
+        self.source = ("NO_SOURCE", "")
+        self.destination = ("NO_DEST", "")
+        self.logdir = None
+        self.contexts = {}
+        # self.codec = 'latin_1'
+        self.codec = 'utf-8'
         if options is not None:
             if 'find' in options.keys():
                 self.find = bytes(options['find'], 'ascii')  # text to highlight
@@ -25,21 +32,59 @@ class Module:
                     self.codec = codec
                 except LookupError:
                     print(f"{self.name}: {options['codec']} is not a valid codec, using {self.codec}")
+            log_dir = str(options.get("logdir", ""))
+            if log_dir != "":
+                self.logdir = path.abspath(log_dir)
 
+    def create_context(self, timestamp):
+        ctx = {}
+        self.contexts[timestamp] = ctx
+        ctx["remote_hostname"] = None
+        ctx["timestamp"] = None
+        ctx["timestamp_str"] = None
+        ctx["source"] = None
+        ctx["destination"] = None
 
-    def execute(self, data):
+        return ctx
+        
+    def help(self):
+        return """
+        \tfind: string that should be highlighted\n
+        \tcolor: ANSI color code. Will be wrapped with \\033[ and m, so\n
+         passing 32;1 will result in \\033[32;1m (bright green)
+        \tcodec: codec to decode bytes to string (default utf-8)\n
+        \tlogdir: if not set, output to stdout; else output to log files under logdir\n"""
+    
+    def get_destination(self, timestamp):
+        return self.contexts.get(timestamp, {}).get("destination") or self.destination
+
+    def get_source(self, timestamp):
+        return self.contexts.get(timestamp, {}).get("source") or self.source
+
+    def execute_ex(self, data, timestamp):
+        to_print = ""
+        ctx = self.contexts[timestamp]
         if self.find is None:
-            print(decode(data, self.codec))
+            to_print = decode(data, self.codec)
         else:
             pdata = data.replace(self.find, self.color + self.find + b'\033[0m')
-            print(decode(pdata, self.codec))
+            to_print = decode(pdata, self.codec)
+            
+        if self.logdir:
+            remote = self.get_source(timestamp) if self.incoming else self.get_destination(timestamp)
+            remote_addr = ctx["remote_hostname"] or remote[0]
+            remote_port = remote[1]
+            remote_addr = HOSTNAME_INVALID_PATTERN.sub("_", str(remote_addr))
+            if ctx["timestamp_str"] is None:
+                ctx["timestamp_str"] = ctx["timestamp"].strftime("%Y-%m-%d_%H-%M-%S-%f")
+            filename = "%s$$%s_%d_text.log" % (ctx["timestamp_str"], remote_addr, remote_port)
+            with open(path.join(self.logdir, filename), "a") as f:
+                f.write(to_print)
+                f.write("\n\n=========\n\n")
+        else:
+            print(to_print)
+            
         return data
-
-    def help(self):
-        h = '\tfind: string that should be highlighted\n'
-        h += ('\tcolor: ANSI color code. Will be wrapped with \\033[ and m, so'
-              ' passing 32;1 will result in \\033[32;1m (bright green)')
-        return h
 
 
 if __name__ == '__main__':
