@@ -24,7 +24,7 @@ class Module:
 
             log_dir = str(options.get("logdir", ""))
             if log_dir != "":
-                self.logdir = path.abspath(log_dir)
+                self.logdir = log_dir
         
     def create_context(self, timestamp):
         ctx = {}

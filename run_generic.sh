@@ -53,23 +53,23 @@ OM_ARGS=( )
 IM_VAL=""
 OM_VAL=""
 if [ -n "$FLAG_ENABLE_TEXT_DUMP" ]; then
-    IM_VAL="$IM_VAL""${IM_VAL:+,}""textdump:logdir=\"$LOG_DIR\""
-    OM_VAL="$OM_VAL""${OM_VAL:+,}""textdump:logdir=\"$LOG_DIR\""
+	IM_VAL="$IM_VAL""${IM_VAL:+,}""textdump:logdir=\"$LOG_DIR\""
+	OM_VAL="$OM_VAL""${OM_VAL:+,}""textdump:logdir=\"$LOG_DIR\""
 fi
 if [ -n "$FLAG_ENABLE_HEX_DUMP" ]; then
-    IM_VAL="$IM_VAL""${IM_VAL:+,}""hexdump:wsdirection=1:logdir=\"$LOG_DIR\""
-    OM_VAL="$OM_VAL""${OM_VAL:+,}""hexdump:wsdirection=1:logdir=\"$LOG_DIR\""
+	IM_VAL="$IM_VAL""${IM_VAL:+,}""hexdump:wsdirection=1:logdir=\"$LOG_DIR\""
+	OM_VAL="$OM_VAL""${OM_VAL:+,}""hexdump:wsdirection=1:logdir=\"$LOG_DIR\""
 fi
 
 if [ -n "$IM_VAL" ]; then
-    IM_ARGS=( "-im" "$IM_VAL" )
+	IM_ARGS=( "-im" "$IM_VAL" )
 fi
 if [ -n "$OM_VAL" ]; then
-    OM_ARGS=( "-om" "$OM_VAL" )
+	OM_ARGS=( "-om" "$OM_VAL" )
 fi
 
 if [ -z "$FLAG_SHOULD_OUTPUT_TO_FILE" ]; then
-	"$PYTHON_BIN" -u "$DIR"/tcpproxy.py -s5 -lp "$PORT" -ac "$CA_PEM" -ak "$CA_KEY_PEM" ${FLAG_SHOULD_DECRYPT_TLS:+"$FLAG_SHOULD_DECRYPT_TLS"} -v "${IM_ARGS[@]}" "${OM_ARGS[@]}" $@
+	"$PYTHON_BIN" -u "$DIR"/tcpproxy.py -s5 -lp "$PORT" -ac "$CA_PEM" -ak "$CA_KEY_PEM" ${FLAG_SHOULD_DECRYPT_TLS:+"$FLAG_SHOULD_DECRYPT_TLS"} -v "${IM_ARGS[@]}" "${OM_ARGS[@]}" "$@"
 else
-	"$PYTHON_BIN" -u "$DIR"/tcpproxy.py -s5 -lp "$PORT" -ac "$CA_PEM" -ak "$CA_KEY_PEM" ${FLAG_SHOULD_DECRYPT_TLS:+"$FLAG_SHOULD_DECRYPT_TLS"} -v "${IM_ARGS[@]}" "${OM_ARGS[@]}" $@ > $LOG_DIR"main_$(date +%Y%m%d_%H%M%S).log" 2>&1
+	"$PYTHON_BIN" -u "$DIR"/tcpproxy.py -s5 -lp "$PORT" -ac "$CA_PEM" -ak "$CA_KEY_PEM" ${FLAG_SHOULD_DECRYPT_TLS:+"$FLAG_SHOULD_DECRYPT_TLS"} -v "${IM_ARGS[@]}" "${OM_ARGS[@]}" "$@" > $LOG_DIR"main_$(date +%Y%m%d_%H%M%S).log" 2>&1
 fi
