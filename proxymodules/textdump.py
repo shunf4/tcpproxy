@@ -64,11 +64,13 @@ class Module:
     def execute_ex(self, data, timestamp):
         to_print = ""
         ctx = self.contexts[timestamp]
+        to_print_b = b''
         if self.find is None:
-            to_print = decode(data, self.codec)
+            to_print_b = data
         else:
             pdata = data.replace(self.find, self.color + self.find + b'\033[0m')
-            to_print = decode(pdata, self.codec)
+            to_print_b = pdata
+        to_print = decode(to_print_b, self.codec, errors='ignore')
             
         if self.logdir:
             remote = self.get_source(timestamp) if self.incoming else self.get_destination(timestamp)
@@ -78,10 +80,12 @@ class Module:
             if ctx["timestamp_str"] is None:
                 ctx["timestamp_str"] = ctx["timestamp"].strftime("%Y-%m-%d_%H-%M-%S-%f")
             filename = "%s$$%s_%d_text.log" % (ctx["timestamp_str"], remote_addr, remote_port)
-            with open(path.join(self.logdir, filename), "a") as f:
-                f.write(to_print)
-                f.write("\n\n=========\n\n")
+            with open(path.join(self.logdir, filename), "ab") as f:
+                f.write(("<<<<<<<<<<< RECV <<<<<<<<<<<\n" if self.incoming else ">>>>>>>>>>> SEND >>>>>>>>>>>\n").encode("ascii"))
+                f.write(to_print_b)
+                f.write("\n".encode("ascii"))
         else:
+            print(("<<<<<<<<<<< RECV <<<<<<<<<<<" if self.incoming else ">>>>>>>>>>> SEND >>>>>>>>>>>"))
             print(to_print)
             
         return data
