@@ -330,7 +330,7 @@ def create_host_cert(args, host):
     else:
         sans.append(x509.IPAddress(ip))
     builder = builder.add_extension(x509.SubjectAlternativeName(sans), critical=False)
-    cert = builder.sign(private_key=ca_key, algorithm=hashes.SHA1())
+    cert = builder.sign(private_key=ca_key, algorithm=hashes.SHA256())
     
     cert_file = tempfile.NamedTemporaryFile(delete=False)
     cert_file.write(cert.public_bytes(serialization.Encoding.PEM))
@@ -559,7 +559,7 @@ def start_proxy_thread(local_socket, in_addrinfo, args, in_modules, out_modules)
         remote_socket.set_proxy(proxy_types[args.proxy_type], args.proxy_ip, args.proxy_port)
 
     try:
-        remote_socket.connect((target_ip, target_port))
+        remote_socket.connect((target_host, target_port))
         remote_socket_addrport = remote_socket.getpeername()
         vprint('Connected to %s:%d for client %s:%d' % (*remote_socket_addrport, *local_socket_addrport), args.verbose)
         log(args.logfile, 'Connected to %s:%d for client %s:%d' % (*remote_socket_addrport, *local_socket_addrport))
